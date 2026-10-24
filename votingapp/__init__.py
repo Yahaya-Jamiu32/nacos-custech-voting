@@ -4,9 +4,19 @@ from flask import Flask, jsonify
 from sqlalchemy.pool import NullPool
 from .models import db
 
+def _find_db_url():
+    """Find the database address whatever prefix Vercel/Neon used (e.g. DATABASE_URL, STORAGE_DATABASE_URL)."""
+    env = os.environ
+    for k in ("DATABASE_URL", "POSTGRES_URL"):
+        if env.get(k): return env[k]
+    for suffix in ("DATABASE_URL", "POSTGRES_URL"):
+        for k in sorted(env):
+            if k.endswith("_" + suffix) and env[k] and "UNPOOLED" not in k and "NON_POOLING" not in k: return env[k]
+    return ""
+
 def create_app(config=None):
     app = Flask(__name__)
-    url = next((os.environ[k] for k in ("DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL") if os.environ.get(k)), "")
+    url = _find_db_url()
     if url.startswith("postgres://"): url = url.replace("postgres://", "postgresql://", 1)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY"), PHONE_PEPPER=os.environ.get("PHONE_PEPPER"),
