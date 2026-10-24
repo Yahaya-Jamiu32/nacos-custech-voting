@@ -1,0 +1,7 @@
+tests
+docs
+scripts
+.github
+conftest.py
+pytest.ini
+requirements-dev.txt
