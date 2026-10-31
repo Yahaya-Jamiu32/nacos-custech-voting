@@ -16,6 +16,7 @@ async function api(path, method = "GET", body) {
   catch { throw new Error("Network error. Check your connection."); }
   const j = await r.json().catch(() => ({}));
   if (r.status === 401 && !path.startsWith("/login")) { sessionStorage.clear(); S.csrf = null; location.hash = "login"; throw new Error("Please log in."); }
+  if (r.status === 403 && j.code === "face_required") { location.hash = "face"; throw new Error("Face check required."); }
   if (!r.ok) throw new Error(j.error || "Request failed");
   return j;
 }
@@ -60,8 +61,55 @@ function login() {
     try { const r = await api("/login", "POST", {matric: $("#m").value, phone: $("#p").value, admin_password: $("#a").value});
       S.csrf = r.csrf; S.admin = r.admin; S.matric = $("#m").value.trim().toUpperCase();
       sessionStorage.setItem("csrf", S.csrf); sessionStorage.setItem("admin", r.admin ? "1" : ""); sessionStorage.setItem("matric", S.matric);
-      location.hash = r.admin ? "admin" : "home"; } catch (e) { note(e.message); }
+      location.hash = r.admin ? "admin" : r.face_required ? "face" : "home"; } catch (e) { note(e.message); }
     b.disabled = false; b.textContent = "Login"; };
+}
+/* ---------- face check (runs in the browser; only a 128-number template is sent, never a photo) ---------- */
+const FACE_CDN = "https://cdn.jsdelivr.net/npm/@vladmandic/face-api@1.7.12", FACE_LOCAL = "/models";   // to self-host, put face-api.js in public/js and the model files in public/models
+let camStream = null, faceReady = null;
+function stopCam() { if (camStream) { camStream.getTracks().forEach(t => t.stop()); camStream = null; } }
+const addScript = src => new Promise((ok, no) => { const e = document.createElement("script"); e.src = src; e.onload = ok; e.onerror = () => no(new Error("load " + src)); document.head.appendChild(e); });
+function loadFace() {
+  if (faceReady) return faceReady;
+  faceReady = (async () => {
+    try { await addScript("/js/face-api.js"); } catch { await addScript(FACE_CDN + "/dist/face-api.js"); }
+    const base = await fetch(FACE_LOCAL + "/tiny_face_detector_model-weights_manifest.json").then(r => r.ok ? FACE_LOCAL : FACE_CDN + "/model").catch(() => FACE_CDN + "/model");
+    await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(base), faceapi.nets.faceLandmark68Net.loadFromUri(base), faceapi.nets.faceRecognitionNet.loadFromUri(base)]);
+  })().catch(e => { faceReady = null; throw new Error("Could not load the face scanner. Check your internet connection and try again."); });
+  return faceReady;
+}
+async function face() {
+  page("Face Check", `<p class="sub">To keep the vote fair, each person may register one face. Your face is turned into a short list of numbers on your phone. <b>No photo is saved or sent.</b> The numbers are used only to stop one person voting with several accounts, and are deleted after the election.</p>
+<label style="display:flex;gap:8px;align-items:flex-start;margin:.6rem 0"><input type="checkbox" id="fc" style="width:auto;margin-top:3px"><span>I agree that my face template is stored for this election, as described above.</span></label>
+<video id="vid" playsinline muted style="width:100%;max-height:340px;border-radius:12px;background:#000;transform:scaleX(-1);display:none"></video>
+<button class="btn" id="fs">Start camera and scan</button><div id="o" role="alert"></div>
+<small>Face the camera in good light, remove cap or glasses if possible, and keep only one face in view.</small>`);
+  const btn = $("#fs"), vid = $("#vid");
+  btn.onclick = async () => {
+    if (!$("#fc").checked) return note("Please tick the consent box first.");
+    btn.disabled = true; btn.textContent = "Preparing...";
+    try {
+      await loadFace();
+      stopCam(); camStream = await navigator.mediaDevices.getUserMedia({video: {facingMode: "user", width: {ideal: 640}}, audio: false});
+      vid.srcObject = camStream; vid.style.display = "block"; await vid.play(); btn.textContent = "Hold still...";
+      const opt = new faceapi.TinyFaceDetectorOptions({inputSize: 320, scoreThreshold: 0.6}), got = []; let tries = 0;
+      while (got.length < 3 && tries++ < 40) {
+        const all = await faceapi.detectAllFaces(vid, opt).withFaceLandmarks().withFaceDescriptors();
+        if (all.length > 1) note("More than one face is visible. Only you should be in view.");
+        else if (all.length === 1) { got.push(Array.from(all[0].descriptor)); note("Scanning " + got.length + "/3..."); }
+        else note("No face found. Move closer and face the camera.");
+        await new Promise(r => setTimeout(r, 400));
+      }
+      if (got.length < 3) throw new Error("Could not get a clear scan. Try again in better light.");
+      const mean = got[0].map((_, i) => got.reduce((t, g) => t + g[i], 0) / got.length);
+      const r = await api("/face", "POST", {descriptor: mean, consent: true});
+      stopCam(); note(r.enrolled ? "Face registered." : "Face verified.", 1); setTimeout(() => location.hash = "home", 700);
+    } catch (e) {
+      stopCam(); vid.style.display = "none";
+      note(e.name === "NotAllowedError" ? "Camera permission was denied. Allow the camera in your browser settings and try again." : e.message);
+      btn.disabled = false; btn.textContent = "Try again";
+    }
+  };
 }
 async function home() {
   const b = await api("/ballot"), n = b.categories.length, k = b.categories.reduce((s, c) => s + c.candidates.length, 0), m = b.categories.filter(c => c.selected).length;
@@ -146,6 +194,7 @@ async function control() {
   const o = await api("/admin/overview");
   page("Election Control", `<div class="box"><b>Election Status</b><div style="margin:6px 0"><span class="pill ${o.status}">${LBL[o.status]}</span></div><small>Start: ${fmt(o.opened_at)}</small><small>End: ${fmt(o.closed_at)}</small><small>Session #${o.election_id}</small></div>
 <div class="row"><button class="btn green" data-act="start">Start Voting</button><button class="btn red" data-act="stop">Stop Voting</button></div><div class="row" style="margin-top:10px"><button class="btn warn" data-act="cancel">Cancel Election</button><button class="btn purple" data-act="restart">Restart Election</button></div><div id="o" role="alert"></div>
+<div class="box" style="margin-top:12px"><b>Face data</b><small>Committee override if a real student was wrongly blocked.</small><label for="fm">Matric number to reset</label><input id="fm" autocapitalize="characters" placeholder="e.g. 23L1CS0001"><button class="btn alt" data-act="facereset">Reset this voter's face</button><button class="btn red" data-act="facepurge">Delete ALL face data</button></div>
 <div class="msg warn"><b>Warning</b><br>Cancelling the election invalidates all current votes. A fresh election starts with zero votes and a new session.</div>`, "admin");
 }
 async function pdf() {
@@ -162,6 +211,8 @@ async function act(a) {
   const run = async f => { try { await f(); await route(); setTimeout(() => note("Done.", 1), 0); } catch (e) { note(e.message); } };
   if (a === "start") { if (confirm("Start voting now?")) run(() => api("/admin/election/start", "POST", {})); }
   else if (a === "stop") { if (confirm("Stop voting? Voters will no longer be able to vote.")) run(() => api("/admin/election/stop", "POST", {})); }
+  else if (a === "facereset") { const m = $("#fm").value.trim(); if (m && confirm("Remove the stored face for " + m + "? They must register a face again.")) run(() => api("/admin/face/reset", "POST", {matric: m})); }
+  else if (a === "facepurge") { if (confirm("Delete ALL stored face data? Do this only after the election. Voters would have to register faces again.") && confirm("Really delete all face data? This cannot be undone.")) run(() => api("/admin/face/purge", "POST", {confirm: true})); }
   else { const r = prompt(a === "cancel" ? "Reason for cancelling (required):" : "Reason for restarting (required). This cancels the current election and starts a new one:");
     if (r && confirm("This cannot be undone. All votes in the current session will be excluded. Continue?")) run(async () => { await api("/admin/election/cancel", "POST", {reason: r, confirm: true}); if (a === "restart") await api("/admin/election/new", "POST", {}); }); }
 }
@@ -170,9 +221,9 @@ document.addEventListener("click", async e => {
   const a = e.target.closest("[data-act]"); if (a) return act(a.dataset.act);
   const d = e.target.closest("[data-del]"); if (d && confirm("Remove this item? Records are kept for audit.")) { try { await api("/admin/" + d.dataset.del, "DELETE"); route(); } catch (er) { note(er.message); } }
 });
-const R = {splash, login, home, vote, live, results, admin, cats, catform, cands, candform, control, pdf, audit}, ADMIN = ["admin", "cats", "catform", "cands", "candform", "control", "pdf", "audit"];
+const R = {splash, login, face, home, vote, live, results, admin, cats, catform, cands, candform, control, pdf, audit}, ADMIN = ["admin", "cats", "catform", "cands", "candform", "control", "pdf", "audit"];
 async function route() {
-  clearInterval(timer); const [n, arg] = (location.hash.slice(1) || "splash").split("/");
+  clearInterval(timer); stopCam(); const [n, arg] = (location.hash.slice(1) || "splash").split("/");
   if (!["splash", "login"].includes(n) && !S.csrf) { location.hash = "login"; return; }
   if (ADMIN.includes(n) && !S.admin) { location.hash = "home"; return; }
   try { await (R[n] || splash)(arg); window.scrollTo(0, 0); } catch (e) { if (S.csrf) page("Something went wrong", `<div class="msg err">${esc(e.message)}</div><button class="btn" data-go="${S.admin ? "admin" : "home"}">Back</button>`); }

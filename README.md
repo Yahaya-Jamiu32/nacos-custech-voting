@@ -13,6 +13,18 @@ If `/api/health` fails: Vercel > Project > Logs. Most common causes: wrong DATAB
 ## Project layout
 `app.py` (entrypoint) · `votingapp/` (models, routes, PDF) · `public/` (frontend) · `tests/` · `scripts/` (optional local tools) · `docs/CHECKLISTS.md`
 
+## Who can vote (strict roll)
+Only matrics of the form `<prefix><3- or 4-digit number: 001-999 or 0001-9999>` for the 40 department groups (20 for L1 and 20 for L2) can log in, e.g. `23L1CS100`, `23L1CS0301`, `23L2CS8602`. Anything else (000 or 0000, 1-2 digit or 5-digit numbers, letters or symbols after the prefix, other years or levels) is refused. The only exception is the built-in admin matric. The rule lives in `is_eligible` in `votingapp/core.py`; change `MAX_SERIAL`, `ELIGIBLE_L1` or `ELIGIBLE_L2` there if the roll changes.
+
+## Face check
+After login each voter scans their face once. The browser turns the face into 128 numbers (no photo is sent or stored). The server refuses a face that is already linked to another matric, and on later logins the face must match the one stored for that matric. Ballot and voting stay locked until the check passes. The admin is exempt.
+- **Consent and deletion:** a consent box is shown before scanning. After the election open Election Control and tap **Delete ALL face data**.
+- **Wrongly blocked student:** Election Control > Face data > enter the matric > **Reset this voter's face** (recorded in the audit log).
+- **Emergency off switch:** set `FACE_ENABLED=0` in Vercel and redeploy. `FACE_THRESHOLD` (default 0.5) is how close two scans must be to count as the same person; lower is stricter.
+- **Scanner files:** loaded from the jsDelivr CDN by default. To self-host, put `face-api.js` in `public/js/` and the model files in `public/models/`.
+- **Limits (tell your electorate):** the check runs in the voter's browser, so a determined person could bypass it, and there is no liveness test, so a photo of a face may pass. Twins and look-alikes can be wrongly matched. It deters casual duplicate accounts; it is not proof of identity.
+- **Do not turn it on mid-election:** voters who already voted would have to register a face before logging in again.
+
 ## Rules
 - Voting works only while the election is open; Stop and each vote use the same database lock, so a vote committed before Stop counts and any later vote is rejected.
 - Categories and candidates can be edited only before voting starts. Removals are soft (records kept).

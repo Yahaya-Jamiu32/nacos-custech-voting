@@ -1,11 +1,11 @@
-import secrets, io
+import secrets, io, json, math
 from datetime import timedelta
 from functools import wraps
 from flask import Blueprint, request, session, jsonify, send_file, current_app
 from sqlalchemy import func, text
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash
-from .models import db, Voter, Election, Category, Candidate, Vote, Audit, utcnow
+from .models import db, Voter, Election, Category, Candidate, Vote, Audit, FaceTemplate, utcnow
 from .core import is_eligible, normalize_phone, phone_hash, norm_matric
 from .pdfgen import build_pdf
 
@@ -25,6 +25,15 @@ def login_required(f):
     @wraps(f)
     def w(*a, **k):
         if not session.get("voter_id"): return err("Please log in.", 401)
+        return f(*a, **k)
+    return w
+
+def face_required(f):
+    """Voters must pass the face check in this session before seeing the ballot or voting."""
+    @wraps(f)
+    def w(*a, **k):
+        if current_app.config["FACE_ENABLED"] and not session.get("face_ok"):
+            return jsonify(error="Face check required.", code="face_required"), 403
         return f(*a, **k)
     return w
 
@@ -85,19 +94,87 @@ def login():
         except IntegrityError: return fail()
     audit("login_admin" if is_admin else "login", actor=matric); db.session.commit()
     session.clear(); session.permanent = True
-    session.update(voter_id=v.id, matric=matric, admin=is_admin, csrf=secrets.token_hex(16))
-    return jsonify(csrf=session["csrf"], admin=is_admin)
+    session.update(voter_id=v.id, matric=matric, admin=is_admin, csrf=secrets.token_hex(16), face_ok=(is_admin or not cfg["FACE_ENABLED"]))
+    return jsonify(csrf=session["csrf"], admin=is_admin, face_required=not session["face_ok"])
 
 @bp.post("/logout")
 def logout(): session.clear(); return jsonify(ok=True)
 
 @bp.get("/me")
 @login_required
-def me(): return jsonify(matric=session["matric"], admin=session["admin"], csrf=session["csrf"])
+def me(): return jsonify(matric=session["matric"], admin=session["admin"], csrf=session["csrf"], face_required=not session.get("face_ok"))
+
+# ---------- face check ----------
+def parse_descriptor(raw):
+    """Accept exactly 128 finite numbers; return a list of floats rounded to 4 places, or None."""
+    if not isinstance(raw, list) or len(raw) != 128: return None
+    out = []
+    for x in raw:
+        if isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or abs(x) > 2: return None
+        out.append(round(float(x), 4))
+    return out if sum(x * x for x in out) > 0.01 else None
+
+def too_far(a, b, limit_sq):
+    """True when squared distance between a and b exceeds limit_sq (stops early)."""
+    t = 0.0
+    for x, y in zip(a, b):
+        t += (x - y) ** 2
+        if t > limit_sq: return True
+    return False
+
+@bp.post("/face")
+@login_required
+def face():
+    """First time: store this face for the voter, refusing it if it already belongs to someone else.
+    Later logins: the face must match the one stored for this voter."""
+    cfg = current_app.config
+    if not cfg["FACE_ENABLED"] or session.get("admin"): session["face_ok"] = True; return jsonify(ok=True, enrolled=False)
+    vid, matric = session["voter_id"], session["matric"]
+    if Audit.query.filter(Audit.action == "face_failed", Audit.actor == matric, Audit.at > utcnow() - timedelta(minutes=10)).count() >= cfg["FACE_MAX_FAILS"]:
+        return err("Too many failed face checks. Wait 10 minutes or contact the election committee.", 429)
+    d = request.get_json(silent=True) or {}
+    desc = parse_descriptor(d.get("descriptor"))
+    if desc is None or d.get("consent") is not True: return err("Invalid face scan. Tick the consent box and try again.")
+    limit_sq = cfg["FACE_THRESHOLD"] ** 2
+    mine = FaceTemplate.query.filter_by(voter_id=vid).first()
+    if mine:
+        if too_far(desc, json.loads(mine.descriptor), limit_sq):
+            audit("face_failed", "face does not match the one registered for this matric"); db.session.commit()
+            return err("This face does not match the one registered for your matric number. Try again in better light, or contact the election committee.", 403)
+        session["face_ok"] = True; audit("face_verified"); db.session.commit()
+        return jsonify(ok=True, enrolled=False)
+    for other_vid, raw in db.session.query(FaceTemplate.voter_id, FaceTemplate.descriptor).filter(FaceTemplate.voter_id != vid):
+        if not too_far(desc, json.loads(raw), limit_sq):
+            audit("face_duplicate", f"face already registered to voter #{other_vid}"); db.session.commit()
+            return err("This face is already registered to another account, so it cannot be used again. Contact the election committee.", 409)
+    db.session.add(FaceTemplate(voter_id=vid, descriptor=json.dumps(desc)))
+    try: audit("face_enrolled"); db.session.commit()
+    except IntegrityError: db.session.rollback(); return err("Face already registered. Please log in again.", 409)
+    session["face_ok"] = True
+    return jsonify(ok=True, enrolled=True)
+
+@bp.post("/admin/face/reset")
+@admin_required
+def face_reset():
+    """Committee override: remove one voter's stored face so they can register again (for example after a wrong match)."""
+    m = norm_matric((request.get_json(silent=True) or {}).get("matric"))
+    v = Voter.query.filter_by(matric=m).first()
+    if not v: return err("Matric not found.", 404)
+    n = FaceTemplate.query.filter_by(voter_id=v.id).delete(); audit("face_reset", f"{m} ({n} removed)"); db.session.commit()
+    return jsonify(ok=True, removed=n)
+
+@bp.post("/admin/face/purge")
+@admin_required
+def face_purge():
+    """Delete ALL stored face data (do this after the election)."""
+    if (request.get_json(silent=True) or {}).get("confirm") is not True: return err("Confirmation required.")
+    n = FaceTemplate.query.delete(); audit("face_purge", f"{n} removed"); db.session.commit()
+    return jsonify(ok=True, removed=n)
 
 # ---------- ballot / vote ----------
 @bp.get("/ballot")
 @login_required
+@face_required
 def ballot():
     e = current_election()
     mine = {v.category_id: v.candidate_id for v in Vote.query.filter_by(election_id=e.id, voter_id=session["voter_id"])}
@@ -110,6 +187,7 @@ def ballot():
 
 @bp.post("/vote")
 @login_required
+@face_required
 def vote():
     d = request.get_json(silent=True) or {}
     try: cid, kid = int(d.get("category_id")), int(d.get("candidate_id"))

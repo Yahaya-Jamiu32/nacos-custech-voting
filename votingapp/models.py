@@ -46,3 +46,10 @@ class Audit(db.Model):
     at = db.Column(db.DateTime, default=utcnow, index=True)
     action = db.Column(db.String(60), index=True); actor = db.Column(db.String(40))
     detail = db.Column(db.Text); ip = db.Column(db.String(64), index=True)
+
+class FaceTemplate(db.Model):
+    """Face template (128 numbers from the browser), NOT a photo. One per voter; the same face can never be linked to two voters."""
+    id = db.Column(db.Integer, primary_key=True)
+    voter_id = db.Column(db.Integer, db.ForeignKey("voter.id"), unique=True, nullable=False)
+    descriptor = db.Column(db.Text, nullable=False)   # JSON list of 128 floats
+    created_at = db.Column(db.DateTime, default=utcnow)

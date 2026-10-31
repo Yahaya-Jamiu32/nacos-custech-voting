@@ -4,19 +4,9 @@ from flask import Flask, jsonify
 from sqlalchemy.pool import NullPool
 from .models import db
 
-def _find_db_url():
-    """Find the database address whatever prefix Vercel/Neon used (e.g. DATABASE_URL, STORAGE_DATABASE_URL)."""
-    env = os.environ
-    for k in ("DATABASE_URL", "POSTGRES_URL"):
-        if env.get(k): return env[k]
-    for suffix in ("DATABASE_URL", "POSTGRES_URL"):
-        for k in sorted(env):
-            if k.endswith("_" + suffix) and env[k] and "UNPOOLED" not in k and "NON_POOLING" not in k: return env[k]
-    return ""
-
 def create_app(config=None):
     app = Flask(__name__)
-    url = _find_db_url()
+    url = next((os.environ[k] for k in ("DATABASE_URL", "POSTGRES_URL", "POSTGRES_PRISMA_URL") if os.environ.get(k)), "")
     if url.startswith("postgres://"): url = url.replace("postgres://", "postgresql://", 1)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY"), PHONE_PEPPER=os.environ.get("PHONE_PEPPER"),
@@ -26,7 +16,9 @@ def create_app(config=None):
         SQLALCHEMY_ENGINE_OPTIONS={"poolclass": NullPool, "connect_args": {"sslmode": "require", "connect_timeout": 10}} if url.startswith("postgresql") else {},
         AUTO_INIT_DB=os.environ.get("AUTO_INIT_DB", "1") == "1",
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=True,
-        PERMANENT_SESSION_LIFETIME=timedelta(hours=2), LOGIN_MAX_FAILS=8, MAX_CONTENT_LENGTH=1024 * 1024)
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=2), LOGIN_MAX_FAILS=8, MAX_CONTENT_LENGTH=1024 * 1024,
+        # --- face check. FACE_ENABLED=0 switches it off (emergency fallback). Lower threshold = stricter "same person" match.
+        FACE_ENABLED=os.environ.get("FACE_ENABLED", "1") == "1", FACE_THRESHOLD=float(os.environ.get("FACE_THRESHOLD", "0.5")), FACE_MAX_FAILS=10)
     if config: app.config.update(config)
     for k in ("SECRET_KEY", "PHONE_PEPPER", "SQLALCHEMY_DATABASE_URI"):
         if not app.config.get(k): raise RuntimeError(f"Missing required setting: {k}")
