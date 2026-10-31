@@ -69,7 +69,7 @@ def login():
         db.session.rollback(); audit("login_failed", actor="-"); db.session.commit()
         return err("Login failed. Check your details or contact the election committee.", 401)
     matric, phone = norm_matric(d.get("matric")), normalize_phone(d.get("phone"))
-    if not matric or len(matric) > 40 or not phone or not is_eligible(matric): return fail()
+    if not matric or len(matric) > 40 or not phone or not is_eligible(matric, cfg["ADMIN_MATRIC"]): return fail()
     is_admin = bool(cfg["ADMIN_MATRIC"]) and matric == norm_matric(cfg["ADMIN_MATRIC"])
     if is_admin and (phone != normalize_phone(cfg["ADMIN_PHONE"]) or not cfg["ADMIN_PASSWORD_HASH"]
                      or not check_password_hash(cfg["ADMIN_PASSWORD_HASH"], str(d.get("admin_password") or ""))):
