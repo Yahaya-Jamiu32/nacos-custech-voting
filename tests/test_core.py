@@ -7,7 +7,7 @@ from votingapp.core import is_eligible, normalize_phone
 ADM, ADMP, PW = "23L1CSS0055", "07036779507", "correct-horse-battery"
 @pytest.fixture
 def app():
-    a = create_app(dict(SECRET_KEY="t", PHONE_PEPPER="p", SQLALCHEMY_DATABASE_URI="sqlite:///:memory:", SESSION_COOKIE_SECURE=False, AUTO_INIT_DB=False,
+    a = create_app(dict(SECRET_KEY="t", PHONE_PEPPER="p", SQLALCHEMY_DATABASE_URI="sqlite:///:memory:", SESSION_COOKIE_SECURE=False, AUTO_INIT_DB=False, FACE_ENABLED=False,
                         ADMIN_MATRIC=ADM, ADMIN_PHONE=ADMP, ADMIN_PASSWORD_HASH=generate_password_hash(PW)))
     with a.app_context():
         db.create_all(); c = Category(name="Pres", position=1); db.session.add(c); db.session.flush()
@@ -23,7 +23,8 @@ def test_strict_roll_40_groups_any_4_digit_serial():
     ok = [f"{p}{n:04d}" for p in ELIGIBLE for n in (1, 2, 300, 301, 999, 1000, 4567, 9999)]
     assert all(is_eligible(m) for m in ok)
     assert is_eligible(" 23l2cs 0301 ") and is_eligible("26L2LI9999") and is_eligible("25L2SE0450") and is_eligible("23L1CS0999")
-    for bad in ["23L1CS0000", "23L2CS0000", "23L1CS001", "23L2CS001", "23L1CS10000", "23L2CS00001", "23L1CS", "23L1CSabc", "23L2CS0001X", "X23L2CS0001",
+    assert is_eligible("23L1CS100") and is_eligible("23l2cs001") and is_eligible("25L1SE999") and is_eligible("24LSE8602") and is_eligible("26L2FT8602")
+    for bad in ["23L1CS0000", "23L2CS0000", "23L1CS000", "23L2CS000", "23L1CS01", "23L1CS1", "23L1CS10000", "23L2CS00001", "23L1CS", "23L1CSabc", "23L2CS0001X", "X23L2CS0001",
                 "CUST/23L2CS/0001", "23L1CS-0001", "23L1CSS0055", "25LSE0001", "23L1SE0001", "23LSE0001x", "22L2CS0001", "23L3CS0001", "23L2CS000a",
                 "23L1CS0001\u0663", "", None]:
         assert not is_eligible(bad), bad
@@ -73,10 +74,96 @@ def test_tie(app):
     a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
     a.post("/api/admin/election/start", json={}, headers=ha)
     cs = a.get("/api/ballot").json["categories"][0]
-    for i, m in enumerate(("24L1CS1", "24L1CS2")):
+    for i, m in enumerate(("24L1CS0001", "24L1CS0002")):
         c, r = login(app, m, f"0801000000{i}"); c.post("/api/vote", json=dict(category_id=cs["id"], candidate_id=cs["candidates"][i]["id"]), headers=H(r))
     a.post("/api/admin/election/stop", json={}, headers=ha)
     assert a.get("/api/admin/overview", ).json["results"][0]["status"] == "tie"
 
 def test_health(app):
     j = app.test_client().get("/api/health").json; assert j["ok"] and j["db"] and j["admin_configured"]
+
+
+# ---------- face check ----------
+@pytest.fixture
+def face_app(app):
+    app.config.update(FACE_ENABLED=True); return app
+def vec(base, jitter=0.0): return [base + (jitter if i % 2 else -jitter) for i in range(128)]
+def face(c, r, v, consent=True): return c.post("/api/face", json=dict(descriptor=v, consent=consent), headers=H(r))
+
+def test_face_required_before_ballot_and_vote(face_app):
+    c, r = login(face_app, "23L1CS0001", "08011111111"); assert r.json["face_required"] is True
+    b = c.get("/api/ballot"); assert b.status_code == 403 and b.json["code"] == "face_required"
+    assert c.post("/api/vote", json=dict(category_id=1, candidate_id=1), headers=H(r)).status_code == 403
+    assert face(c, r, vec(0.1)).json["enrolled"] is True
+    assert c.get("/api/ballot").status_code == 200
+def test_same_face_cannot_be_reused_for_another_matric(face_app):
+    c1, r1 = login(face_app, "23L1CS0001", "08011111111"); assert face(c1, r1, vec(0.1)).status_code == 200
+    c2, r2 = login(face_app, "23L1CS0002", "08022222222")
+    assert face(c2, r2, vec(0.1, 0.002)).status_code == 409                        # same person, slightly different scan
+    assert c2.get("/api/ballot").status_code == 403
+    assert face(c2, r2, vec(0.3)).status_code == 200                               # a different person is fine
+def test_returning_voter_must_match_own_face(face_app):
+    c, r = login(face_app, "23L1CS0001", "08011111111"); face(c, r, vec(0.1))
+    c, r = login(face_app, "23L1CS0001", "08011111111"); assert r.json["face_required"] is True
+    assert face(c, r, vec(0.3)).status_code == 403 and c.get("/api/ballot").status_code == 403
+    assert face(c, r, vec(0.1, 0.002)).json["enrolled"] is False and c.get("/api/ballot").status_code == 200
+def test_face_rejects_bad_input_and_needs_consent(face_app):
+    c, r = login(face_app, "23L1CS0001", "08011111111")
+    assert face(c, r, vec(0.1), consent=False).status_code == 400
+    for bad in [[0.1] * 127, [0.1] * 129, ["a"] * 128, [float("inf")] * 128, [0.0] * 128, [5.0] * 128, [10 ** 400] * 128, None, "x"]:
+        assert c.post("/api/face", json=dict(descriptor=bad, consent=True), headers=H(r)).status_code == 400
+def test_face_admin_exempt_reset_and_purge(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    assert ra.json["face_required"] is False and a.get("/api/ballot").status_code == 200
+    c, r = login(face_app, "23L1CS0001", "08011111111"); face(c, r, vec(0.1))
+    assert c.post("/api/admin/face/reset", json=dict(matric="23L1CS0001"), headers=H(r)).status_code == 403        # voters cannot reset
+    assert a.post("/api/admin/face/reset", json=dict(matric="23L1CS0001"), headers=ha).json["removed"] == 1
+    c2, r2 = login(face_app, "23L1CS0002", "08022222222"); assert face(c2, r2, vec(0.1)).status_code == 200         # face is free again
+    assert a.post("/api/admin/face/purge", json={}, headers=ha).status_code == 400
+    assert a.post("/api/admin/face/purge", json=dict(confirm=True), headers=ha).json["removed"] == 1
+def test_face_can_be_switched_off(app):
+    c, r = login(app, "23L1CS0001", "08011111111"); assert r.json["face_required"] is False and c.get("/api/ballot").status_code == 200
+
+
+# ---------- special (bad camera) logins ----------
+import re as _re
+def issue(a, h, note="Ada"): return a.post("/api/admin/special", json=dict(note=note), headers=h).json["codes"][0]
+def special_login(a, m, p):
+    c = a.test_client(); return c, c.post("/api/login", json=dict(matric=m, phone=p, bad_camera=True))
+
+def test_special_code_format_only_admin_can_issue(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    code = issue(a, ha); assert _re.fullmatch(r"30L1PC[A-Z0-9]{4}", code)
+    c, r = login(face_app, "23L1CS0001", "08011111111")
+    assert c.post("/api/admin/special", json={}, headers=H(r)).status_code == 403 and c.get("/api/admin/special").status_code == 403
+def test_special_login_skips_face_but_only_for_issued_codes(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); code = issue(a, H(ra))
+    c, r = special_login(face_app, code, "08011111111")
+    assert r.status_code == 200 and r.json["face_required"] is False and c.get("/api/ballot").status_code == 200   # no face scan needed
+    assert special_login(face_app, "30L1PCZZZZ", "08022222222")[1].status_code == 401          # right pattern, never issued
+    assert login(face_app, code, "08033333333")[1].status_code == 401                          # a special code cannot use the normal login
+    assert special_login(face_app, "23L1CS0001", "08044444444")[1].status_code == 401          # a student matric cannot use the bad-camera login
+    assert special_login(face_app, ADM, ADMP)[1].status_code == 401                            # nor can the admin matric
+def test_special_code_binds_to_first_phone_and_phone_not_shared(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); ha = H(ra); c1, c2 = issue(a, ha), issue(a, ha, "Bola")
+    assert special_login(face_app, c1, "08011111111")[1].status_code == 200
+    assert special_login(face_app, c1, "08099999999")[1].status_code == 401                    # someone else with the leaked code
+    assert special_login(face_app, c2, "08011111111")[1].status_code == 401                    # phone already used by another matric
+def test_special_revoke_blocks_login_and_ends_session(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); ha = H(ra); code = issue(a, ha)
+    c, r = special_login(face_app, code, "08011111111"); assert c.get("/api/ballot").status_code == 200
+    assert a.post("/api/admin/special/revoke", json=dict(matric=code), headers=ha).status_code == 200
+    assert c.get("/api/ballot").status_code == 401 and special_login(face_app, code, "08011111111")[1].status_code == 401
+    row = a.get("/api/admin/special").json[0]; assert row["matric"] == code and row["revoked"] is True and row["used"] is True
+
+def test_special_session_never_enrols_a_face(face_app):
+    a, ra = login(face_app, ADM, ADMP, admin_password=PW); code = issue(a, H(ra))
+    c, r = special_login(face_app, code, "08011111111")
+    assert c.post("/api/face", json=dict(descriptor=vec(0.1), consent=True), headers=H(r)).status_code == 200
+    c2, r2 = login(face_app, "23L1CS0001", "08022222222")
+    assert face(c2, r2, vec(0.1)).json["enrolled"] is True                                  # the special user did not use up this face
+def test_repeated_duplicate_scans_are_locked_out(face_app):
+    c1, r1 = login(face_app, "23L1CS0001", "08011111111"); face(c1, r1, vec(0.1))
+    c2, r2 = login(face_app, "23L1CS0002", "08022222222")
+    codes = [face(c2, r2, vec(0.1)).status_code for _ in range(11)]
+    assert codes[:10] == [409] * 10 and codes[10] == 429

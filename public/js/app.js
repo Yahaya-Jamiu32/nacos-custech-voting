@@ -54,11 +54,14 @@ function login() {
   A.className = "light"; A.innerHTML = `<div class="hero" style="justify-content:flex-start">${logos()}<h1 style="color:var(--dark)">NACOS CUSTECH<span>Electronic Voting System</span></h1>
 <div class="card" style="text-align:left"><b>Login to your account</b><label for="m">Matric Number</label><input id="m" autocomplete="off" autocapitalize="characters" placeholder="e.g. 23L1CS0001">
 <label for="p">Phone Number</label><input id="p" inputmode="tel" placeholder="e.g. 08012345678"><div id="ad" hidden><label for="a">Administrator password</label><input id="a" type="password" autocomplete="current-password"></div>
+<div id="bcw" hidden><small style="text-align:center"><a href="#" id="bc" style="color:var(--dark)">Bad camera</a></small></div>
 <button class="btn" id="go">Login</button><div id="o" role="alert"></div><small style="text-align:center">Having trouble? Contact the election committee.</small>
 <small style="text-align:center"><a href="#" id="sa" style="color:var(--dark)">Administrator login</a></small></div></div>${WM}`;
-  $("#sa").onclick = e => { e.preventDefault(); $("#ad").hidden = false; };
+  let special = false;
+  $("#sa").onclick = e => { e.preventDefault(); special = false; $("#m").placeholder = "e.g. 23L1CS0001"; $("#ad").hidden = false; $("#bcw").hidden = false; };
+  $("#bc").onclick = e => { e.preventDefault(); special = true; $("#ad").hidden = true; $("#bcw").hidden = true; $("#a").value = ""; $("#m").placeholder = "Special matric number"; $("#m").focus(); note("Enter the special matric number the committee gave you, and your phone number.", 1); };
   $("#go").onclick = async () => { const b = $("#go"); b.disabled = true; b.textContent = "Checking...";
-    try { const r = await api("/login", "POST", {matric: $("#m").value, phone: $("#p").value, admin_password: $("#a").value});
+    try { const r = await api("/login", "POST", {matric: $("#m").value, phone: $("#p").value, admin_password: $("#a").value, bad_camera: special});
       S.csrf = r.csrf; S.admin = r.admin; S.matric = $("#m").value.trim().toUpperCase();
       sessionStorage.setItem("csrf", S.csrf); sessionStorage.setItem("admin", r.admin ? "1" : ""); sessionStorage.setItem("matric", S.matric);
       location.hash = r.admin ? "admin" : r.face_required ? "face" : "home"; } catch (e) { note(e.message); }
@@ -73,7 +76,7 @@ function loadFace() {
   if (faceReady) return faceReady;
   faceReady = (async () => {
     try { await addScript("/js/face-api.js"); } catch { await addScript(FACE_CDN + "/dist/face-api.js"); }
-    const base = await fetch(FACE_LOCAL + "/tiny_face_detector_model-weights_manifest.json").then(r => r.ok ? FACE_LOCAL : FACE_CDN + "/model").catch(() => FACE_CDN + "/model");
+    const base = await fetch(FACE_LOCAL + "/tiny_face_detector_model.json").then(r => r.ok ? FACE_LOCAL : FACE_CDN + "/model").catch(() => FACE_CDN + "/model");
     await Promise.all([faceapi.nets.tinyFaceDetector.loadFromUri(base), faceapi.nets.faceLandmark68Net.loadFromUri(base), faceapi.nets.faceRecognitionNet.loadFromUri(base)]);
   })().catch(e => { faceReady = null; throw new Error("Could not load the face scanner. Check your internet connection and try again."); });
   return faceReady;
@@ -159,7 +162,8 @@ async function admin() {
   page("Admin Panel", `<h2>Welcome, Admin</h2><p class="sub">Manage the election and monitor activities.</p>
 <div class="tiles two"><button class="tile" ${go("cats")}><small>Categories</small><b>${o.results.length}</b></button><button class="tile" ${go("cands")}><small>Contestants</small><b>${k.filter(x => x.active).length}</b></button>
 <button class="tile" ${go("live")}><small>Live Results</small><b>&#128202;</b></button><button class="tile" ${go("control")}><small>Election Control</small><b>${LBL[o.status] ? "&#9881;" : ""}</b></button>
-<button class="tile" ${go("pdf")}><small>Reports</small><b>&#128196;</b></button><button class="tile" ${go("audit")}><small>Audit Log</small><b>&#128274;</b></button></div>
+<button class="tile" ${go("pdf")}><small>Reports</small><b>&#128196;</b></button><button class="tile" ${go("audit")}><small>Audit Log</small><b>&#128274;</b></button>
+<button class="tile" ${go("special")}><small>Special Logins</small><b>&#128247;</b></button></div>
 <span class="pill ${o.status}">${LBL[o.status]}</span> <small style="display:inline">Participated: ${o.stats.participants} of ${o.stats.voters}</small>
 <div class="row" style="margin-top:12px"><button class="btn green" data-act="start">Start Voting</button><button class="btn red" data-act="stop">Stop Voting</button><button class="btn warn" data-act="cancel">Cancel Election</button><button class="btn purple" data-act="restart">Restart Election</button></div><div id="o" role="alert"></div>
 <button class="btn alt" ${go("home")}>Voter view (I can vote too)</button>`);
@@ -203,6 +207,14 @@ async function pdf() {
   $("#dl").onclick = async () => { try { const r = await fetch("/api/admin/results.pdf", {credentials: "same-origin"}); if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "PDF failed");
     const u = URL.createObjectURL(await r.blob()), a = document.createElement("a"); a.href = u; a.download = "nacos-custech-results.pdf"; a.click(); URL.revokeObjectURL(u); note("PDF downloaded.", 1); } catch (e) { note(e.message); } };
 }
+async function special() {
+  const rows = await api("/admin/special");
+  page("Special Logins", `<p class="sub">For students without a working camera. Each code works only after you issue it here, skips the face scan, and still needs the student's own phone number. Share a code with one student only.</p>
+<label for="sn">Given to (your own note)</label><input id="sn" maxlength="200" placeholder="e.g. Ada, DM 31 Oct"><button class="btn" id="sg">Generate special matric</button><div id="o" role="alert"></div>
+<div style="overflow-x:auto"><table><tr><th>Code</th><th>Given to</th><th>Status</th><th class="n">Votes</th><th></th></tr>${rows.map(x => `<tr><td><b>${esc(x.matric)}</b></td><td>${esc(x.note)}</td><td>${x.revoked ? "Revoked" : x.used ? "Used" : "Not used"}</td><td class="n">${x.votes}</td><td>${x.revoked ? "" : `<button class="btn sm alt" data-rv="${esc(x.matric)}">Revoke</button>`}</td></tr>`).join("") || '<tr><td colspan="5">No special codes yet.</td></tr>'}</table></div>`, "admin");
+  $("#sg").onclick = async () => { try { const r = await api("/admin/special", "POST", {note: $("#sn").value, count: 1}); await special(); note("New code: " + r.codes[0] + ". Send it to the student privately.", 1); } catch (e) { note(e.message); } };
+  document.querySelectorAll("[data-rv]").forEach(b => b.onclick = async () => { if (confirm("Revoke " + b.dataset.rv + "? It can no longer log in.")) { try { await api("/admin/special/revoke", "POST", {matric: b.dataset.rv}); await special(); } catch (e) { note(e.message); } } });
+}
 async function audit() {
   const a = await api("/admin/audit");
   page("Audit Log", `<div style="overflow-x:auto"><table><tr><th>Time (UTC)</th><th>Action</th><th>Actor</th><th>Detail</th></tr>${a.map(x => `<tr><td>${esc(x.at.slice(0, 16).replace("T", " "))}</td><td>${esc(x.action)}</td><td>${esc(x.actor)}</td><td>${esc(x.detail)}</td></tr>`).join("")}</table></div>`, "admin");
@@ -221,7 +233,7 @@ document.addEventListener("click", async e => {
   const a = e.target.closest("[data-act]"); if (a) return act(a.dataset.act);
   const d = e.target.closest("[data-del]"); if (d && confirm("Remove this item? Records are kept for audit.")) { try { await api("/admin/" + d.dataset.del, "DELETE"); route(); } catch (er) { note(er.message); } }
 });
-const R = {splash, login, face, home, vote, live, results, admin, cats, catform, cands, candform, control, pdf, audit}, ADMIN = ["admin", "cats", "catform", "cands", "candform", "control", "pdf", "audit"];
+const R = {splash, login, face, special, home, vote, live, results, admin, cats, catform, cands, candform, control, pdf, audit}, ADMIN = ["admin", "special", "cats", "catform", "cands", "candform", "control", "pdf", "audit"];
 async function route() {
   clearInterval(timer); stopCam(); const [n, arg] = (location.hash.slice(1) || "splash").split("/");
   if (!["splash", "login"].includes(n) && !S.csrf) { location.hash = "login"; return; }

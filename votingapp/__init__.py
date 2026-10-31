@@ -18,7 +18,7 @@ def create_app(config=None):
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=True,
         PERMANENT_SESSION_LIFETIME=timedelta(hours=2), LOGIN_MAX_FAILS=8, MAX_CONTENT_LENGTH=1024 * 1024,
         # --- face check. FACE_ENABLED=0 switches it off (emergency fallback). Lower threshold = stricter "same person" match.
-        FACE_ENABLED=os.environ.get("FACE_ENABLED", "1") == "1", FACE_THRESHOLD=float(os.environ.get("FACE_THRESHOLD", "0.5")), FACE_MAX_FAILS=10)
+        FACE_ENABLED=os.environ.get("FACE_ENABLED", "1") == "1", FACE_THRESHOLD=float(os.environ.get("FACE_THRESHOLD", "0.55")), FACE_MAX_FAILS=10)
     if config: app.config.update(config)
     for k in ("SECRET_KEY", "PHONE_PEPPER", "SQLALCHEMY_DATABASE_URI"):
         if not app.config.get(k): raise RuntimeError(f"Missing required setting: {k}")

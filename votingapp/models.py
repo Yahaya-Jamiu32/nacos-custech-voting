@@ -53,3 +53,11 @@ class FaceTemplate(db.Model):
     voter_id = db.Column(db.Integer, db.ForeignKey("voter.id"), unique=True, nullable=False)
     descriptor = db.Column(db.Text, nullable=False)   # JSON list of 128 floats
     created_at = db.Column(db.DateTime, default=utcnow)
+
+class SpecialMatric(db.Model):
+    """Special login code issued by the admin to a student without a working camera. Only codes in this table can use the "bad camera" login."""
+    id = db.Column(db.Integer, primary_key=True)
+    matric = db.Column(db.String(40), unique=True, nullable=False)
+    note = db.Column(db.String(200))          # who it was given to (for the admin's own record)
+    revoked = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, default=utcnow)

@@ -10,17 +10,17 @@ ELIGIBLE = ELIGIBLE_L1 + ELIGIBLE_L2   # both levels share one voting system: 40
 def norm_matric(m):
     return re.sub(r"\s+", "", str(m or "")).upper()
 
-MAX_SERIAL = 9999   # 4-digit serial, 0001 to 9999 (raise the digit count in is_eligible if you ever need 5 digits)
+MAX_SERIAL = 9999   # highest serial; 3- or 4-digit numbers are accepted (raise the digit limit in is_eligible if you ever need 5 digits)
 
 def is_eligible(matric, admin_matric=""):
-    """STRICT roll: exactly <prefix><4-digit serial 0001-9999>, e.g. 23L1CS0001 ... 26L2LI0300 (40 department groups, L1 and L2).
-    Anything else is refused: no extra characters, no 0000, no 3-digit or 5-digit serials. Only the configured admin matric is exempt."""
+    """STRICT roll: exactly <prefix><3- or 4-digit serial, 001-999 or 0001-9999>, e.g. 23L1CS0001 ... 26L2LI0300 (40 department groups, L1 and L2).
+    Anything else is refused: no extra characters, no 0000, no serial of 0, 1-2 digits or 5+ digits. Only the configured admin matric is exempt."""
     m = norm_matric(matric)
     if admin_matric and m == norm_matric(admin_matric): return True
     for p in ELIGIBLE:
         if m.startswith(p):
             serial = m[len(p):]
-            return len(serial) == 4 and serial.isascii() and serial.isdigit() and 1 <= int(serial) <= MAX_SERIAL
+            return len(serial) in (3, 4) and serial.isascii() and serial.isdigit() and 1 <= int(serial) <= MAX_SERIAL
     return False
 
 def normalize_phone(p):
