@@ -5,16 +5,16 @@ ELIGIBLE_L1 = ["23L1CS","23L1FT","23L1CY","23LSE","23L1LI","24L1CS","24L1FT","24
 # L2 mirrors L1 with L2 in place of L1 (same years, same departments). L2 Software Engineering is written consistently as L2SE.
 ELIGIBLE_L2 = ["23L2CS","23L2FT","23L2CY","23L2SE","23L2LI","24L2CS","24L2FT","24L2CY","24L2SE","24L2LI",
                "25L2CS","25L2FT","25L2CY","25L2SE","25L2LI","26L2CS","26L2FT","26L2CY","26L2SE","26L2LI"]
-ELIGIBLE = ELIGIBLE_L1 + ELIGIBLE_L2   # both levels share one voting system: 40 groups x 300 = 12,000 matrics
+ELIGIBLE = ELIGIBLE_L1 + ELIGIBLE_L2   # both levels share one voting system: 40 department groups
 
 def norm_matric(m):
     return re.sub(r"\s+", "", str(m or "")).upper()
 
-MAX_SERIAL = 300   # each department group is numbered 0001 to 0300 only
+MAX_SERIAL = 9999   # 4-digit serial, 0001 to 9999 (raise the digit count in is_eligible if you ever need 5 digits)
 
 def is_eligible(matric, admin_matric=""):
-    """STRICT roll: exactly <prefix><4-digit serial 0001-0300>, e.g. 23L1CS0001 ... 26L2LI0300 (40 groups x 300 = 12,000 matrics: L1 and L2).
-    Anything else is refused: no extra characters, no 0000, no 0301+, no 3-digit serials. Only the configured admin matric is exempt."""
+    """STRICT roll: exactly <prefix><4-digit serial 0001-9999>, e.g. 23L1CS0001 ... 26L2LI0300 (40 department groups, L1 and L2).
+    Anything else is refused: no extra characters, no 0000, no 3-digit or 5-digit serials. Only the configured admin matric is exempt."""
     m = norm_matric(matric)
     if admin_matric and m == norm_matric(admin_matric): return True
     for p in ELIGIBLE:

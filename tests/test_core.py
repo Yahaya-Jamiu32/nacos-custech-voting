@@ -17,14 +17,15 @@ def login(a, m, p, **k):
     c = a.test_client(); return c, c.post("/api/login", json=dict(matric=m, phone=p, **k))
 def H(r): return {"X-CSRF-Token": r.json["csrf"]}
 
-def test_strict_roll_40_groups_x_300():
+def test_strict_roll_40_groups_any_4_digit_serial():
     from votingapp.core import ELIGIBLE, ELIGIBLE_L1, ELIGIBLE_L2
     assert len(ELIGIBLE_L1) == len(ELIGIBLE_L2) == 20 and len(set(ELIGIBLE)) == 40
-    ok = [f"{p}{n:04d}" for p in ELIGIBLE for n in range(1, 301)]
-    assert len(ok) == 12000 and all(is_eligible(m) for m in ok)
-    assert is_eligible(" 23l2cs 0001 ") and is_eligible("26L2LI0300") and is_eligible("25L2SE0150")
-    for bad in ["23L1CS0000", "23L1CS0301", "23L2CS0301", "23L2CS0000", "23L2CS001", "23L2CS0001X", "X23L2CS0001", "CUST/23L2CS/0001",
-                "23L1CSS0055", "25LSE0001", "23L1SE0001", "23LSE0001x", "22L2CS0001", "23L3CS0001", "23L2CS000a", "23L1CS0001\u0663", "", None]:
+    ok = [f"{p}{n:04d}" for p in ELIGIBLE for n in (1, 2, 300, 301, 999, 1000, 4567, 9999)]
+    assert all(is_eligible(m) for m in ok)
+    assert is_eligible(" 23l2cs 0301 ") and is_eligible("26L2LI9999") and is_eligible("25L2SE0450") and is_eligible("23L1CS0999")
+    for bad in ["23L1CS0000", "23L2CS0000", "23L1CS001", "23L2CS001", "23L1CS10000", "23L2CS00001", "23L1CS", "23L1CSabc", "23L2CS0001X", "X23L2CS0001",
+                "CUST/23L2CS/0001", "23L1CS-0001", "23L1CSS0055", "25LSE0001", "23L1SE0001", "23LSE0001x", "22L2CS0001", "23L3CS0001", "23L2CS000a",
+                "23L1CS0001\u0663", "", None]:
         assert not is_eligible(bad), bad
     assert is_eligible("23L1CSS0055", "23L1CSS0055") and not is_eligible("23L1CSS0056", "23L1CSS0055")
 
@@ -35,8 +36,8 @@ def test_login_and_identity_rules(app):
     assert login(app, "23L1CS0001", "08011111111")[1].status_code == 200
     assert login(app, "23L1CS0001", "08022222222")[1].status_code == 401
     assert login(app, "23L1CS0002", "08011111111")[1].status_code == 401
-    assert login(app, "23L1CS0301", "08033333333")[1].status_code == 401
-    assert login(app, "23L2CS0001", "08044444444")[1].status_code == 200 and login(app, "23L2CS0301", "08055555555")[1].status_code == 401
+    assert login(app, "23L1CS0000", "08033333333")[1].status_code == 401
+    assert login(app, "23L2CS0001", "08044444444")[1].status_code == 200 and login(app, "23L2CS0301", "08055555555")[1].status_code == 200
 def test_admin_needs_password(app):
     assert login(app, ADM, ADMP)[1].status_code == 401
     assert login(app, ADM, ADMP, admin_password="wrong")[1].status_code == 401
