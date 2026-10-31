@@ -1,7 +1,8 @@
 import hashlib, hmac, re
 # Exact substrings from the brief. NOTE: 2025 uses 25L1SE, other years use LSE (preserved as written).
 ELIGIBLE = ["23L1CS","23L1FT","23L1CY","23L1SE","23L1LB","24L1CS","24L1FT","24L1CY","24L1SE","24L1LB",
-            "25L1CS","25L1FT","25L1CY","25L1SE","25L1LB","26L1CS","26L1FT","26L1CY","26L1SE","26L1LB"]
+            "25L1CS","25L1FT","25L1CY","25L1SE","25L1LB","26L1CS","26L1FT","26L1CY","26L1SE","26L1LB","23L2CS","23L2FT","23L2CY","23L2SE","23L2LB","24L2CS","24L2FT","24L2CY","24L2SE","24L2LB",
+            "25L2CS","25L2FT","25L2CY","25L2SE","25L2LB","26L2CS","26L2FT","26L2CY","26L2SE","26L2LB"]
 
 def norm_matric(m):
     return re.sub(r"\s+", "", str(m or "")).upper()
