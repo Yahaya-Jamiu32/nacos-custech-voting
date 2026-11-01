@@ -1,7 +1,16 @@
 const $ = (s, r = document) => r.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const A = $("#app"), S = {csrf: sessionStorage.getItem("csrf"), admin: sessionStorage.getItem("admin") === "1", matric: sessionStorage.getItem("matric") || ""};
-let timer = null, vi = 0, li = 0;
+let timer = null, ct = null, vi = 0, li = 0;   // timer = auto-refresh, ct = voting countdown
+const clock = s => { const p = n => String(n).padStart(2, "0"), d = Math.floor(s / 86400); return (d ? d + "d " : "") + p(Math.floor(s % 86400 / 3600)) + ":" + p(Math.floor(s % 3600 / 60)) + ":" + p(s % 60); };
+const timerBox = s => s == null ? "" : `<div class="box" id="cd" role="timer"><b>Voting ends in</b><div id="cdv" style="font-size:1.9rem;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums">${clock(s)}</div></div>`;
+function runClock(s) {   // s = seconds left according to the server; counts down here, and reloads the page when it hits zero
+  clearInterval(ct); if (s == null) return;
+  const end = Date.now() + s * 1000;
+  ct = setInterval(() => { const left = Math.max(0, Math.ceil((end - Date.now()) / 1000)), el = $("#cdv");
+    if (el) { el.textContent = left ? clock(left) : "Voting has ended"; el.style.color = left && left <= 60 ? "#b00020" : ""; }
+    if (!left) { clearInterval(ct); setTimeout(route, 1500); } }, 1000);
+}
 const WM = '<footer class="wm">Designed by DeNoble (Yahaya Jamiu)</footer>';
 const LBL = {draft: "NOT STARTED", open: "VOTING IN PROGRESS", closed: "VOTING CLOSED", cancelled: "CANCELLED"};
 const fmt = t => t ? new Date(t + "Z").toLocaleString() : "Not set";
@@ -21,7 +30,7 @@ async function api(path, method = "GET", body) {
   return j;
 }
 function page(title, body, back, sub) {
-  A.className = ""; clearInterval(timer);
+  A.className = ""; clearInterval(timer); clearInterval(ct);
   A.innerHTML = `<header class="top">${back ? `<button class="ic" aria-label="Back" data-go="${back}">&#8592;</button>` : ""}<h1>${esc(title)}${sub ? `<small>${esc(sub)}</small>` : ""}</h1></header><main class="card main">${body}</main>${WM}`;
 }
 const go = h => `data-go="${h}"`;
@@ -117,20 +126,22 @@ async function face() {
 async function home() {
   const b = await api("/ballot"), n = b.categories.length, k = b.categories.reduce((s, c) => s + c.candidates.length, 0), m = b.categories.filter(c => c.selected).length;
   page("Election Dashboard", `<h2>Hello, ${esc(S.matric)}!</h2><p class="sub">Welcome to your election dashboard.</p>
-<div class="box"><b>Voting Status</b><div style="margin-top:6px"><span class="pill ${b.status}">${LBL[b.status] || b.status}</span></div></div>
+<div class="box"><b>Voting Status</b><div style="margin-top:6px"><span class="pill ${b.status}">${LBL[b.status] || b.status}</span></div></div>${timerBox(b.seconds_left)}
 <div class="tiles"><div class="tile"><small>Total Categories</small><b>${n}</b></div><div class="tile"><small>Total Contestants</small><b>${k}</b></div><div class="tile"><small>Your Votes</small><b>${m}/${n}</b></div></div>
 <h3>Quick Actions</h3><button class="btn" ${go("vote")}>Cast Your Vote</button><button class="btn alt" ${go("live")}>View Live Results</button>
 ${S.admin ? `<button class="btn alt" ${go("admin")}>Admin Panel</button>` : ""}<div class="info"><b>Your vote matters!</b><br>Together we build a better NACOS.</div><button class="btn alt" id="lo">Logout</button>`);
   $("#lo").onclick = async () => { try { await api("/logout", "POST"); } catch {} sessionStorage.clear(); S.csrf = null; location.hash = "login"; };
+  runClock(b.seconds_left);
 }
 async function vote() {
   const b = await api("/ballot"), cs = b.categories;
   if (!cs.length) return page("Cast Your Vote", '<p class="sub">No ballot has been set up yet.</p>', "home");
   vi = Math.min(vi, cs.length - 1); const c = cs[vi];
-  page("Cast Your Vote", `<p class="sub">Category ${vi + 1} of ${cs.length}</p><select id="cs" aria-label="Category">${cs.map((x, i) => `<option value="${i}" ${i === vi ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
+  page("Cast Your Vote", `<p class="sub">Category ${vi + 1} of ${cs.length}</p>${timerBox(b.seconds_left)}<select id="cs" aria-label="Category">${cs.map((x, i) => `<option value="${i}" ${i === vi ? "selected" : ""}>${esc(x.name)}</option>`).join("")}</select>
 <div id="o" role="status">${b.status !== "open" ? '<div class="msg warn">Voting is not open right now.</div>' : ""}</div>
 ${c.candidates.map(k => `<div class="cand ${c.selected === k.id ? "sel" : ""}" tabindex="0" role="radio" aria-checked="${c.selected === k.id}" data-k="${k.id}">${k.photo_url ? `<img class="av" alt="${esc(k.name)}" src="${esc(k.photo_url)}">` : '<span class="av"></span>'}<div><b>${esc(k.name)}</b><small>Department: ${esc(k.department)}</small><small>${esc(k.manifesto)}</small></div><span class="radio">${c.selected === k.id ? "&#9679;" : "&#9675;"}</span></div>`).join("")}
 <button class="btn" id="nx">${vi < cs.length - 1 ? "Next Category &#8594;" : "Finish"}</button>`, "home");
+  runClock(b.seconds_left);
   $("#cs").onchange = e => { vi = +e.target.value; vote(); };
   $("#nx").onclick = () => { if (vi < cs.length - 1) { vi++; vote(); } else location.hash = "home"; };
   document.querySelectorAll(".cand").forEach(d => { const pick = async () => {
@@ -141,12 +152,12 @@ ${c.candidates.map(k => `<div class="cand ${c.selected === k.id ? "sel" : ""}" t
     d.onclick = pick; d.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(); } }; });
 }
 async function live() {
-  page("Live Vote Counts", `<select id="cs" aria-label="Category"></select><div style="margin:10px 0"><span class="pill prov" id="pl">...</span></div><div id="lv">Loading...</div><small id="ps"></small><small>Live results update automatically.</small>`, "home");
+  page("Live Vote Counts", `<div id="cdw"></div><select id="cs" aria-label="Category"></select><div style="margin:10px 0"><span class="pill prov" id="pl">...</span></div><div id="lv">Loading...</div><small id="ps"></small><small>Live results update automatically.</small>`, "home");
   let d; const draw = () => { if (!d) return; const cs = d.categories; $("#pl").textContent = d.label === "FINAL" ? "FINAL RESULTS" : "PROVISIONAL - VOTING " + (d.status === "open" ? "IN PROGRESS" : "NOT OPEN");
     $("#ps").textContent = `Participants: ${d.stats.participants} of ${d.stats.voters} voter identities`;
     if (!cs.length) return $("#lv").textContent = "No results yet."; li = Math.min(li, cs.length - 1); const c = cs[li];
     $("#lv").innerHTML = `<table><tr><th>Contestant</th><th class="n">Votes</th><th class="n">%</th></tr>${c.candidates.map(k => `<tr><td>${esc(k.name)}${bar(k.pct)}</td><td class="n">${k.votes}</td><td class="n">${k.pct}%</td></tr>`).join("")}<tr><td><b>Total Votes</b></td><td class="n"><b>${c.total}</b></td><td class="n">100%</td></tr></table>`; };
-  const load = async () => { d = await api("/results"); const s = $("#cs"); s.innerHTML = d.categories.map((x, i) => `<option value="${i}" ${i === li ? "selected" : ""}>${esc(x.name)}</option>`).join(""); draw(); };
+  const load = async () => { d = await api("/results"); $("#cdw").innerHTML = timerBox(d.seconds_left); runClock(d.seconds_left); const s = $("#cs"); s.innerHTML = d.categories.map((x, i) => `<option value="${i}" ${i === li ? "selected" : ""}>${esc(x.name)}</option>`).join(""); draw(); };
   $("#cs").onchange = e => { li = +e.target.value; draw(); };
   await load(); timer = setInterval(() => load().catch(() => {}), 10000);
 }
@@ -196,10 +207,11 @@ async function candform(id) {
 }
 async function control() {
   const o = await api("/admin/overview");
-  page("Election Control", `<div class="box"><b>Election Status</b><div style="margin:6px 0"><span class="pill ${o.status}">${LBL[o.status]}</span></div><small>Start: ${fmt(o.opened_at)}</small><small>End: ${fmt(o.closed_at)}</small><small>Session #${o.election_id}</small></div>
+  page("Election Control", `<div class="box"><b>Election Status</b><div style="margin:6px 0"><span class="pill ${o.status}">${LBL[o.status]}</span></div><small>Start: ${fmt(o.opened_at)}</small><small>End: ${fmt(o.closed_at || o.closes_at)}</small><small>Session #${o.election_id}</small></div>${timerBox(o.seconds_left)}
 <div class="row"><button class="btn green" data-act="start">Start Voting</button><button class="btn red" data-act="stop">Stop Voting</button></div><div class="row" style="margin-top:10px"><button class="btn warn" data-act="cancel">Cancel Election</button><button class="btn purple" data-act="restart">Restart Election</button></div><div id="o" role="alert"></div>
 <div class="box" style="margin-top:12px"><b>Face data</b><small>Committee override if a real student was wrongly blocked.</small><label for="fm">Matric number to reset</label><input id="fm" autocapitalize="characters" placeholder="e.g. 23L1CS0001"><button class="btn alt" data-act="facereset">Reset this voter's face</button><button class="btn red" data-act="facepurge">Delete ALL face data</button></div>
 <div class="msg warn"><b>Warning</b><br>Cancelling the election invalidates all current votes. A fresh election starts with zero votes and a new session.</div>`, "admin");
+  runClock(o.seconds_left);
 }
 async function pdf() {
   page("Official Results PDF", `<p class="sub">Generate the official results report (available only after voting has closed).</p><button class="btn" id="dl">Download Results PDF</button><div id="o" role="alert"></div>
@@ -221,7 +233,9 @@ async function audit() {
 }
 async function act(a) {
   const run = async f => { try { await f(); await route(); setTimeout(() => note("Done.", 1), 0); } catch (e) { note(e.message); } };
-  if (a === "start") { if (confirm("Start voting now?")) run(() => api("/admin/election/start", "POST", {})); }
+  if (a === "start") { const t = prompt("How many minutes should voting stay open?\n(60 = 1 hour, 1440 = 1 day, max 10080). Voting stops by itself when the time is up."); if (t === null) return;
+    const n = Number(t.trim()); if (!t.trim() || !Number.isInteger(n) || n < 1 || n > 10080) return note("Enter a whole number of minutes from 1 to 10080.");
+    if (confirm(`Start voting now? It will stop automatically after ${clock(n * 60)} (hh:mm:ss).`)) run(() => api("/admin/election/start", "POST", {minutes: n})); }
   else if (a === "stop") { if (confirm("Stop voting? Voters will no longer be able to vote.")) run(() => api("/admin/election/stop", "POST", {})); }
   else if (a === "facereset") { const m = $("#fm").value.trim(); if (m && confirm("Remove the stored face for " + m + "? They must register a face again.")) run(() => api("/admin/face/reset", "POST", {matric: m})); }
   else if (a === "facepurge") { if (confirm("Delete ALL stored face data? Do this only after the election. Voters would have to register faces again.") && confirm("Really delete all face data? This cannot be undone.")) run(() => api("/admin/face/purge", "POST", {confirm: true})); }
@@ -235,7 +249,7 @@ document.addEventListener("click", async e => {
 });
 const R = {splash, login, face, special, home, vote, live, results, admin, cats, catform, cands, candform, control, pdf, audit}, ADMIN = ["admin", "special", "cats", "catform", "cands", "candform", "control", "pdf", "audit"];
 async function route() {
-  clearInterval(timer); stopCam(); const [n, arg] = (location.hash.slice(1) || "splash").split("/");
+  clearInterval(timer); clearInterval(ct); stopCam(); const [n, arg] = (location.hash.slice(1) || "splash").split("/");
   if (!["splash", "login"].includes(n) && !S.csrf) { location.hash = "login"; return; }
   if (ADMIN.includes(n) && !S.admin) { location.hash = "home"; return; }
   try { await (R[n] || splash)(arg); window.scrollTo(0, 0); } catch (e) { if (S.csrf) page("Something went wrong", `<div class="msg err">${esc(e.message)}</div><button class="btn" data-go="${S.admin ? "admin" : "home"}">Back</button>`); }

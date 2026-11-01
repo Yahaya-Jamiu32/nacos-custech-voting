@@ -3,7 +3,7 @@ import hashlib, hmac, re
 ELIGIBLE_L1 = ["23L1CS","23L1FT","23L1CY","23L1SE","23L1LB","24L1CS","24L1FT","24L1CY","24L1SE","24L1LB",
                "25L1CS","25L1FT","25L1CY","25L1SE","25L1LB","26L1CS","26L1FT","26L1CY","26L1SE","26L1LB"]
 # L2 mirrors L1 with L2 in place of L1 (same years, same departments). L2 Software Engineering is written consistently as L2SE.
-ELIGIBLE_L2 = ["23L2CS","23L2FT","23L2CY","23L2SE","23L2LI","24L2CS","24L2FT","24L2CY","24L2SE","24L2LI",
+ELIGIBLE_L2 = ["23L2CS","23L2FT","23L2CY","23L2SE","23L2LB","24L2CS","24L2FT","24L2CY","24L2SE","24L2LB",
                "25L2CS","25L2FT","25L2CY","25L2SE","25L2LB","26L2CS","26L2FT","26L2CY","26L2SE","26L2LB"]
 ELIGIBLE = ELIGIBLE_L1 + ELIGIBLE_L2   # both levels share one voting system: 40 department groups
 

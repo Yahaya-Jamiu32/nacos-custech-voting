@@ -52,12 +52,24 @@ def current_election():
     e = Election.query.filter(Election.status != "cancelled").order_by(Election.id.desc()).first()
     if not e:
         e = Election(status="draft"); db.session.add(e); db.session.commit()
+    if e.status == "open" and e.closes_at and e.closes_at <= utcnow():   # timer ran out: close it (serverless, so checked on every read)
+        e = locked(e.id)
+        if e.status == "open" and e.closes_at and e.closes_at <= utcnow():
+            e.status, e.closed_at = "closed", e.closes_at
+            audit("election_auto_stop", f"election {e.id}: timer ended", actor="system")
+        db.session.commit()
     return e
+
+def seconds_left(e):
+    """Whole seconds until the timer ends (None when voting is not open or no timer was set). Counted by the server so voters' clocks do not matter."""
+    if e.status != "open" or not e.closes_at: return None
+    return max(0, math.ceil((e.closes_at - utcnow()).total_seconds()))
 
 def toint(v):
     try: return int(v)
     except (TypeError, ValueError): return 0
 
+MAX_MINUTES = 7 * 24 * 60
 def locked(eid): return db.session.query(Election).filter_by(id=eid).with_for_update().one()
 
 @bp.get("/health")
@@ -233,7 +245,7 @@ def ballot():
         cs = Candidate.query.filter_by(category_id=c.id, active=True).order_by(Candidate.name).all()
         if cs: cats.append(dict(id=c.id, name=c.name, selected=mine.get(c.id), candidates=[
             dict(id=x.id, name=x.name, department=x.department, manifesto=x.manifesto, photo_url=x.photo_url) for x in cs]))
-    return jsonify(status=e.status, election_id=e.id, categories=cats)
+    return jsonify(status=e.status, election_id=e.id, categories=cats, seconds_left=seconds_left(e))
 
 @bp.post("/vote")
 @login_required
@@ -243,7 +255,7 @@ def vote():
     try: cid, kid = int(d.get("category_id")), int(d.get("candidate_id"))
     except (TypeError, ValueError): return err("Invalid selection.")
     e = locked(current_election().id)   # row lock: serialises against close/cancel
-    if e.status != "open": db.session.rollback(); return err("Voting is not open.", 409)
+    if e.status != "open" or (e.closes_at and e.closes_at <= utcnow()): db.session.rollback(); return err("Voting is not open.", 409)
     cand = db.session.get(Candidate, kid)
     cat = db.session.get(Category, cid)
     if not cand or not cat or not cat.active or not cand.active or cand.category_id != cid:
@@ -283,7 +295,7 @@ def results():
     r = tally(e)
     if not final:   # winners only declared after close
         for c in r: c["leaders"], c["status"] = [], "provisional"
-    return jsonify(status=e.status, label="FINAL" if final else "PROVISIONAL", categories=r, stats=stats(e))
+    return jsonify(status=e.status, label="FINAL" if final else "PROVISIONAL", categories=r, stats=stats(e), seconds_left=seconds_left(e))
 
 # ---------- admin: election lifecycle ----------
 def transition(frm, to, action, **extra):
@@ -291,14 +303,19 @@ def transition(frm, to, action, **extra):
     if e.status not in frm: db.session.rollback(); return err(f"Not allowed while election is {e.status}.", 409)
     e.status = to
     for k, v in extra.items(): setattr(e, k, v)
-    audit(action, f"election {e.id}" + (f": {extra.get('cancel_reason')}" if "cancel_reason" in extra else ""))
+    audit(action, f"election {e.id}" + (f": {extra.get('cancel_reason')}" if "cancel_reason" in extra else "") + (f": automatic stop at {extra['closes_at']} UTC" if extra.get("closes_at") else ""))
     db.session.commit(); return jsonify(ok=True, status=to)
 
 @bp.post("/admin/election/start")
 @admin_required
 def e_start():
     if not Candidate.query.filter_by(active=True).count(): return err("Add candidates first.", 409)
-    return transition(("draft",), "open", "election_start", opened_at=utcnow())
+    raw = (request.get_json(silent=True) or {}).get("minutes"); now = utcnow(); extra = {}
+    if raw is not None:   # optional timer: voting stops by itself after this many minutes
+        m = toint(raw) if isinstance(raw, (int, str)) and not isinstance(raw, bool) else 0   # bool, float, list etc. are rejected
+        if not 1 <= m <= MAX_MINUTES: return err("Voting time must be a whole number of minutes from 1 to 10080 (7 days).")
+        extra["closes_at"] = now + timedelta(minutes=m)
+    return transition(("draft",), "open", "election_start", opened_at=now, **extra)
 
 @bp.post("/admin/election/stop")
 @admin_required
@@ -325,7 +342,7 @@ def e_new():
 def overview():
     e = current_election()
     iso = lambda t: t.isoformat() if t else None
-    return jsonify(status=e.status, election_id=e.id, opened_at=iso(e.opened_at), closed_at=iso(e.closed_at), stats=stats(e), results=tally(e))
+    return jsonify(status=e.status, election_id=e.id, opened_at=iso(e.opened_at), closed_at=iso(e.closed_at), closes_at=iso(e.closes_at), seconds_left=seconds_left(e), stats=stats(e), results=tally(e))
 
 def editable(): return current_election().status == "draft"
 LOCKED = "Structure can only be edited before voting starts."

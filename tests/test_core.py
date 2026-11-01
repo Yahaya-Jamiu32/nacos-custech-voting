@@ -167,3 +167,28 @@ def test_repeated_duplicate_scans_are_locked_out(face_app):
     c2, r2 = login(face_app, "23L1CS0002", "08022222222")
     codes = [face(c2, r2, vec(0.1)).status_code for _ in range(11)]
     assert codes[:10] == [409] * 10 and codes[10] == 429
+
+
+# ---------- voting timer ----------
+def test_timer_stops_voting_automatically(app):
+    from datetime import timedelta
+    from votingapp.models import Election, utcnow
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    v, rv = login(app, "24L1FT0007", "09012345678"); hv = H(rv)
+    start = lambda **k: a.post("/api/admin/election/start", json=k, headers=ha).status_code
+    assert start(minutes=0) == 400 and start(minutes="abc") == 400 and start(minutes=10081) == 400 and start(minutes=True) == 400
+    assert start(minutes=30) == 200
+    j = v.get("/api/ballot").json; cat, cands = j["categories"][0]["id"], j["categories"][0]["candidates"]
+    assert j["status"] == "open" and 1790 <= j["seconds_left"] <= 1800 and 1790 <= v.get("/api/results").json["seconds_left"] <= 1800
+    vote = lambda: v.post("/api/vote", json=dict(category_id=cat, candidate_id=cands[0]["id"]), headers=hv).status_code
+    assert vote() == 200
+    e = Election.query.order_by(Election.id.desc()).first(); e.closes_at = utcnow() - timedelta(seconds=1); db.session.commit()   # time runs out
+    assert vote() == 409
+    j = v.get("/api/ballot").json; assert j["status"] == "closed" and j["seconds_left"] is None
+    assert v.get("/api/results").json["label"] == "FINAL"
+    assert "election_auto_stop" in [x["action"] for x in a.get("/api/admin/audit").json]
+
+def test_no_timer_when_minutes_not_given(app):
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    assert a.post("/api/admin/election/start", json={}, headers=ha).status_code == 200
+    assert a.get("/api/ballot").json["seconds_left"] is None

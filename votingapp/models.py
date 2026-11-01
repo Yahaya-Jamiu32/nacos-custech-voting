@@ -14,6 +14,7 @@ class Election(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     status = db.Column(db.String(12), nullable=False, default="draft")  # draft|open|closed|cancelled
     opened_at = db.Column(db.DateTime); closed_at = db.Column(db.DateTime)
+    closes_at = db.Column(db.DateTime)   # scheduled automatic stop time (UTC); NULL = no timer
     cancel_reason = db.Column(db.Text)
     created_at = db.Column(db.DateTime, default=utcnow)
 

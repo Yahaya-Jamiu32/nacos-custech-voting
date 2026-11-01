@@ -20,13 +20,10 @@ Only matrics of the form `<prefix><3- or 4-digit number: 001-999 or 0001-9999>` 
 After login each voter scans their face once. The browser turns the face into 128 numbers (no photo is sent or stored). The server refuses a face that is already linked to another matric, and on later logins the face must match the one stored for that matric. Ballot and voting stay locked until the check passes. The admin is exempt.
 - **Consent and deletion:** a consent box is shown before scanning. After the election open Election Control and tap **Delete ALL face data**.
 - **Wrongly blocked student:** Election Control > Face data > enter the matric > **Reset this voter's face** (recorded in the audit log).
-- **Emergency off switch:** set `FACE_ENABLED=0` in Vercel and redeploy. `FACE_THRESHOLD` (default 0.55; the audit log records the distance to the nearest other face on every registration so you can tune it: raise it if the same person gets through twice, lower it if different students are blocked) is how close two scans must be to count as the same person; lower is stricter.
-- **Scanner files:** loaded from the jsDelivr CDN by default. To self-host, put `face-api.js` (from the `@vladmandic/face-api` package, `dist/face-api.js`) in `public/js/` and that package's `model/` folder contents (the `.json` and `.bin` files) in `public/models/`.
+- **Emergency off switch:** set `FACE_ENABLED=0` in Vercel and redeploy. `FACE_THRESHOLD` (default 0.5) is how close two scans must be to count as the same person; lower is stricter.
+- **Scanner files:** loaded from the jsDelivr CDN by default. To self-host, put `face-api.js` in `public/js/` and the model files in `public/models/`.
 - **Limits (tell your electorate):** the check runs in the voter's browser, so a determined person could bypass it, and there is no liveness test, so a photo of a face may pass. Twins and look-alikes can be wrongly matched. It deters casual duplicate accounts; it is not proof of identity.
 - **Do not turn it on mid-election:** voters who already voted would have to register a face before logging in again.
-
-## Special logins (students without a working camera)
-Admin Panel > **Special Logins** > Generate. Each code looks like `30L1PC` + 4 random letters/digits and works only after you issue it. Give each code to one student privately and note who has it (there is a "Given to" note). The student opens the login page, taps **Administrator login**, then **Bad camera**, and enters the special matric and their own phone. They skip the face scan; they still need to be on the roll you issued, and the code binds to the first phone that uses it (a leaked code is useless on any other phone). The table shows each code's status and how many votes it cast, and **Revoke** blocks a code immediately. Every issue, login and revoke is in the audit log.
 
 ## Rules
 - Voting works only while the election is open; Stop and each vote use the same database lock, so a vote committed before Stop counts and any later vote is rejected.
