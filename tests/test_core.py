@@ -192,3 +192,58 @@ def test_no_timer_when_minutes_not_given(app):
     a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
     assert a.post("/api/admin/election/start", json={}, headers=ha).status_code == 200
     assert a.get("/api/ballot").json["seconds_left"] is None
+
+
+# ---------- admin: clear stored voter logins ----------
+def test_admin_clears_one_voter_and_their_vote(app):
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    v, rv = login(app, "24L1FT0007", "09011111111"); hv = H(rv)   # first login used a wrong phone number by mistake
+    a.post("/api/admin/election/start", json={}, headers=ha)
+    b = v.get("/api/ballot").json["categories"][0]
+    cast = lambda c, h: c.post("/api/vote", json=dict(category_id=b["id"], candidate_id=b["candidates"][0]["id"]), headers=h).status_code
+    total = lambda: a.get("/api/results").json["categories"][0]["total"]
+    assert cast(v, hv) == 200 and total() == 1
+    assert login(app, "24L1FT0007", "09022222222")[1].status_code == 401   # the correct phone is now refused: the problem being fixed
+    clear = lambda **k: a.post("/api/admin/voters/clear", json=k, headers=ha)
+    assert clear().status_code == 400 and clear(phone="123").status_code == 400 and clear(matric="24L1FT0999").status_code == 404
+    p = clear(matric="24L1FT0007", phone="09022222222")   # preview only: nothing is deleted yet
+    assert p.status_code == 200 and p.json["matches"] == [dict(matric="24L1FT0007", votes=1, face=False)] and total() == 1
+    r = clear(matric="24L1FT0007", phone="09022222222", confirm=True)
+    assert r.status_code == 200 and (r.json["voters"], r.json["votes"]) == (1, 1) and total() == 0
+    assert v.get("/api/ballot").status_code == 401   # the old session ends at once
+    v2, rv2 = login(app, "24L1FT0007", "09022222222"); assert rv2.status_code == 200
+    assert cast(v2, H(rv2)) == 200 and total() == 1   # votes again with the right details
+    assert "voter_cleared" in [x["action"] for x in a.get("/api/admin/audit").json]
+
+def test_clear_matches_by_phone_or_by_matric_and_is_admin_only(app):
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    login(app, "24L1FT0001", "09033333333"); login(app, "24L1FT0002", "09044444444")
+    clear = lambda **k: a.post("/api/admin/voters/clear", json=k, headers=ha)
+    assert [m["matric"] for m in clear(phone="+234 903 333 3333").json["matches"]] == ["24L1FT0001"]   # phone only
+    assert [m["matric"] for m in clear(matric="24l1ft0002").json["matches"]] == ["24L1FT0002"]          # matric only
+    assert [m["matric"] for m in clear(matric="24L1FT0001", phone="09044444444").json["matches"]] == ["24L1FT0001", "24L1FT0002"]   # either one matches
+    assert clear(matric=ADM).status_code == 404   # the admin's own record is never cleared
+    v, rv = login(app, "24L1FT0003", "09055555555")
+    assert v.post("/api/admin/voters/clear", json=dict(matric="24L1FT0001", confirm=True), headers=H(rv)).status_code == 403
+    assert v.post("/api/admin/voters/clear-all", json=dict(confirm=True), headers=H(rv)).status_code == 403
+
+def test_clear_all_voters_keeps_admin_and_lets_everyone_login_fresh(app):
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    a.post("/api/admin/election/start", json={}, headers=ha)
+    b = a.get("/api/ballot").json["categories"][0]; users = []
+    for i in (1, 2):
+        c, r = login(app, f"24L1FT000{i}", f"0906000000{i}"); users.append(c)
+        assert c.post("/api/vote", json=dict(category_id=b["id"], candidate_id=b["candidates"][0]["id"]), headers=H(r)).status_code == 200
+    assert a.post("/api/admin/voters/clear-all", json={}, headers=ha).status_code == 400   # needs confirmation
+    r = a.post("/api/admin/voters/clear-all", json=dict(confirm=True), headers=ha)
+    assert r.status_code == 200 and (r.json["voters"], r.json["votes"]) == (2, 2)
+    o = a.get("/api/admin/overview"); assert o.status_code == 200 and o.json["stats"]["voters"] == 1 and o.json["results"][0]["total"] == 0   # admin stays logged in
+    assert all(c.get("/api/ballot").status_code == 401 for c in users)
+    assert login(app, "24L1FT0001", "09077777777")[1].status_code == 200   # different phone now accepted
+
+def test_cannot_clear_voters_after_voting_closed(app):
+    a, ra = login(app, ADM, ADMP, admin_password=PW); ha = H(ra)
+    login(app, "24L1FT0001", "09033333333")
+    a.post("/api/admin/election/start", json={}, headers=ha); a.post("/api/admin/election/stop", json={}, headers=ha)
+    assert a.post("/api/admin/voters/clear", json=dict(matric="24L1FT0001", confirm=True), headers=ha).status_code == 409
+    assert a.post("/api/admin/voters/clear-all", json=dict(confirm=True), headers=ha).status_code == 409

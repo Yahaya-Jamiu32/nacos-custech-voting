@@ -2,7 +2,7 @@ import secrets, io, json, math
 from datetime import timedelta
 from functools import wraps
 from flask import Blueprint, request, session, jsonify, send_file, current_app
-from sqlalchemy import func, text
+from sqlalchemy import func, text, or_
 from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash
 from .models import db, Voter, Election, Category, Candidate, Vote, Audit, FaceTemplate, SpecialMatric, utcnow
@@ -25,6 +25,8 @@ def login_required(f):
     @wraps(f)
     def w(*a, **k):
         if not session.get("voter_id"): return err("Please log in.", 401)
+        v = db.session.get(Voter, session["voter_id"])
+        if not v or v.matric != session.get("matric"): session.clear(); return err("Please log in.", 401)   # record was cleared by the admin
         if session.get("special") and not SpecialMatric.query.filter_by(matric=session.get("matric"), revoked=False).first():
             session.clear(); return err("Please log in.", 401)   # code was revoked by the admin
         return f(*a, **k)
@@ -232,6 +234,48 @@ def face_purge():
     if (request.get_json(silent=True) or {}).get("confirm") is not True: return err("Confirmation required.")
     n = FaceTemplate.query.delete(); audit("face_purge", f"{n} removed"); db.session.commit()
     return jsonify(ok=True, removed=n)
+
+# ---------- admin: clear stored voter logins ----------
+CLOSED_MSG = "Voting has closed and the results are final. Cancel or restart the election first."
+
+def voter_matches(d):
+    """Stored voter records that match the matric number and/or the phone number the admin typed (matching EITHER one is enough). The admin's own record is never included."""
+    m = norm_matric(d.get("matric")); raw = str(d.get("phone") or "").strip(); p = normalize_phone(raw) if raw else None
+    if not m and not raw: return None, "Enter a matric number, a phone number, or both."
+    if raw and not p: return None, "That phone number is not valid."
+    conds = ([Voter.matric == m] if m else []) + ([Voter.phone_hash == phone_hash(p, current_app.config["PHONE_PEPPER"])] if p else [])
+    return Voter.query.filter(or_(*conds), Voter.id != session["voter_id"]).order_by(Voter.id).all(), None
+
+@bp.post("/admin/voters/clear")
+@admin_required
+def voters_clear():
+    """Without confirm=true: only lists the matching records. With confirm=true: deletes them, their votes and their face data, so the person can log in freshly."""
+    d = request.get_json(silent=True) or {}
+    e = locked(current_election().id)   # same lock the vote endpoint uses, so no vote can slip in half-way
+    if e.status == "closed": db.session.rollback(); return err(CLOSED_MSG, 409)
+    rows, bad = voter_matches(d)
+    if bad: db.session.rollback(); return err(bad)
+    if not rows: db.session.rollback(); return err("No stored record matches that matric number or phone number.", 404)
+    ids, matrics = [r.id for r in rows], [r.matric for r in rows]
+    if d.get("confirm") is not True:
+        out = [dict(matric=r.matric, votes=Vote.query.filter_by(election_id=e.id, voter_id=r.id).count(), face=bool(FaceTemplate.query.filter_by(voter_id=r.id).first())) for r in rows]
+        db.session.rollback(); return jsonify(matches=out)
+    votes = Vote.query.filter(Vote.voter_id.in_(ids)).delete()
+    faces = FaceTemplate.query.filter(FaceTemplate.voter_id.in_(ids)).delete()
+    Voter.query.filter(Voter.id.in_(ids)).delete()
+    audit("voter_cleared", f"{', '.join(matrics)} | {votes} vote(s), {faces} face record(s) removed"); db.session.commit()
+    return jsonify(ok=True, voters=len(ids), votes=votes, faces=faces, matrics=matrics)
+
+@bp.post("/admin/voters/clear-all")
+@admin_required
+def voters_clear_all():
+    """Delete every stored voter login (matric + phone), face template and vote so everybody starts fresh. The admin's own login record is kept so you stay logged in."""
+    if (request.get_json(silent=True) or {}).get("confirm") is not True: return err("Confirmation required.")
+    e = locked(current_election().id)
+    if e.status == "closed": db.session.rollback(); return err(CLOSED_MSG, 409)
+    votes = Vote.query.delete(); faces = FaceTemplate.query.delete(); n = Voter.query.filter(Voter.id != session["voter_id"]).delete()
+    audit("voters_cleared_all", f"election {e.id} ({e.status}): {n} voter record(s), {votes} vote(s), {faces} face record(s) removed"); db.session.commit()
+    return jsonify(ok=True, voters=n, votes=votes, faces=faces)
 
 # ---------- ballot / vote ----------
 @bp.get("/ballot")
