@@ -10,7 +10,7 @@ def create_app(config=None):
     if url.startswith("postgres://"): url = url.replace("postgres://", "postgresql://", 1)
     app.config.update(
         SECRET_KEY=os.environ.get("SECRET_KEY"), PHONE_PEPPER=os.environ.get("PHONE_PEPPER"),
-        ADMIN_MATRIC=os.environ.get("ADMIN_MATRIC") or "23L1CSS0055", ADMIN_PHONE=os.environ.get("ADMIN_PHONE") or "07036779507",   # server-side only; env vars override
+        ADMIN_MATRIC=os.environ.get("ADMIN_MATRIC") or "23L1CSS0055", ADMIN_PHONE=os.environ.get("ADMIN_PHONE") or "07035344633",   # server-side only; env vars override
         ADMIN_PASSWORD_HASH=os.environ.get("ADMIN_PASSWORD_HASH", ""),
         SQLALCHEMY_DATABASE_URI=url,
         SQLALCHEMY_ENGINE_OPTIONS={"poolclass": NullPool, "connect_args": {"sslmode": "require", "connect_timeout": 10}} if url.startswith("postgresql") else {},
