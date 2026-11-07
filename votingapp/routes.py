@@ -204,15 +204,16 @@ def face():
         return jsonify(ok=True, enrolled=False)
     if db.engine.dialect.name == "postgresql":   # one enrolment at a time, so two voters cannot register the same face at once
         db.session.execute(text("select pg_advisory_xact_lock(7788)"))
-    nearest = None   # distance to the closest OTHER face; logged so the committee can tune FACE_THRESHOLD
+    nearest = None   # distance to the closest OTHER face; logged so the committee can tune the limits
+    dup_limit = min(cfg["FACE_DUPLICATE_THRESHOLD"], cfg["FACE_THRESHOLD"])   # a new face is only refused when it is VERY close to a stored one; with many voters a loose limit wrongly matches strangers
     for other_vid, raw in db.session.query(FaceTemplate.voter_id, FaceTemplate.descriptor).filter(FaceTemplate.voter_id != vid):
         dist = math.dist(desc, json.loads(raw))
         if nearest is None or dist < nearest[0]: nearest = (dist, other_vid)
-    if nearest and nearest[0] <= cfg["FACE_THRESHOLD"]:
-        audit("face_duplicate", f"distance {nearest[0]:.3f} to voter #{nearest[1]} (limit {cfg['FACE_THRESHOLD']})"); db.session.commit()
+    if nearest and nearest[0] <= dup_limit:
+        audit("face_duplicate", f"distance {nearest[0]:.3f} to voter #{nearest[1]} (limit {dup_limit})"); db.session.commit()
         return err("This face is already registered to another account, so it cannot be used again. Contact the election committee.", 409)
     db.session.add(FaceTemplate(voter_id=vid, descriptor=json.dumps(desc)))
-    try: audit("face_enrolled", f"nearest other face distance {nearest[0]:.3f} (limit {cfg['FACE_THRESHOLD']})" if nearest else "first face"); db.session.commit()
+    try: audit("face_enrolled", f"nearest other face distance {nearest[0]:.3f} (limit {dup_limit})" if nearest else "first face"); db.session.commit()
     except IntegrityError: db.session.rollback(); return err("Face already registered. Please log in again.", 409)
     session["face_ok"] = True
     return jsonify(ok=True, enrolled=True)

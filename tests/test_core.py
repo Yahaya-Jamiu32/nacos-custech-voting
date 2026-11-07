@@ -107,6 +107,12 @@ def test_returning_voter_must_match_own_face(face_app):
     c, r = login(face_app, "23L1CS0001", "08011111111"); assert r.json["face_required"] is True
     assert face(c, r, vec(0.3)).status_code == 403 and c.get("/api/ballot").status_code == 403
     assert face(c, r, vec(0.1, 0.002)).json["enrolled"] is False and c.get("/api/ballot").status_code == 200
+def test_face_duplicate_limit_is_stricter_than_own_face_check(face_app):
+    c1, r1 = login(face_app, "23L1CS0001", "08011111111"); assert face(c1, r1, vec(0.1)).status_code == 200
+    c2, r2 = login(face_app, "23L1CS0002", "08022222222")
+    assert face(c2, r2, vec(0.1265)).status_code == 409    # distance 0.30 from the stored face: clearly the same face
+    assert face(c2, r2, vec(0.1398)).status_code == 200    # distance 0.45: a different person (the old single 0.55 limit wrongly blocked this)
+
 def test_face_rejects_bad_input_and_needs_consent(face_app):
     c, r = login(face_app, "23L1CS0001", "08011111111")
     assert face(c, r, vec(0.1), consent=False).status_code == 400
